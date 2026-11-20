@@ -7,6 +7,7 @@
   <link rel="manifest" href="manifest.json" />
   <link rel="apple-touch-icon" href="icons/icon-192.png" />
   <meta name="description" content="DREAD 98 - retro horror FPS with co-op, team and free-for-all multiplayer." />
+  <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>DREAD 98</title>
@@ -825,6 +826,8 @@
     (function () {
       'use strict';
 
+      let state = null;
+
       // =========================================================================
       // 1. PROCEDURAL 3D SPATIAL HORROR AUDIO ENGINE (HRTF WebAudio)
       // =========================================================================
@@ -1089,7 +1092,7 @@
       function updateRendererSize() {
         const w = window.innerWidth;
         const h = window.innerHeight;
-        const isNative = (state && state.renderMode === 'NATIVE');
+        const isNative = (state ? state.renderMode === 'NATIVE' : localStorage.getItem('dread98-res') === 'NATIVE');
         const dpr = isNative ? Math.min(window.devicePixelRatio || 1, 2.0) : 1.0;
         const scale = isNative ? 1.0 : (Math.min(w, h) < 760 ? 0.72 : 0.82);
         renderWidth = Math.max(1, Math.floor(w * scale * dpr));
@@ -2226,7 +2229,7 @@
       // 9. GAME STATE, CONTROLS, UI REFERENCES & MENU LOGIC
       // =========================================================================
       const playerPos = new THREE.Vector3(0, 1.68, 0);
-      const state = {
+      state = {
         running: false,
         stageNum: 1,
         themeName: 'CITYSCAPE',
@@ -2787,7 +2790,8 @@
         if (e.button !== 0) return;
         if (document.pointerLockElement !== canvas && canvas.requestPointerLock) {
           try {
-            canvas.requestPointerLock();
+            const p = canvas.requestPointerLock();
+            if (p && p.catch) p.catch(() => {});
           } catch (_) {}
         }
         mouseDragging = true;
@@ -3025,7 +3029,8 @@
 
           if (!activeDeviceIsTouch && canvas.requestPointerLock) {
             try {
-              canvas.requestPointerLock();
+              const p = canvas.requestPointerLock();
+              if (p && p.catch) p.catch(() => {});
             } catch (_) {}
           }
         });
