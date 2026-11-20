@@ -514,10 +514,19 @@
       pointer-events: none;
       display: none;
     }
+    #joy-surface {
+      position: absolute;
+      top: 54px;
+      left: 0;
+      width: 44vw;
+      bottom: 0;
+      pointer-events: auto;
+      touch-action: none;
+    }
     #joy-zone {
       position: absolute;
-      left: 16px;
-      bottom: 18px;
+      left: max(16px, env(safe-area-inset-left, 16px));
+      bottom: max(18px, env(safe-area-inset-bottom, 18px));
       width: 124px;
       height: 124px;
       border-radius: 50%;
@@ -525,6 +534,7 @@
       border: 1.5px solid rgba(214, 208, 196, 0.28);
       pointer-events: auto;
       touch-action: none;
+      transition: opacity 0.15s ease-out;
     }
     #joy-knob {
       position: absolute;
@@ -550,8 +560,8 @@
     }
     .touch-actions {
       position: absolute;
-      right: 16px;
-      bottom: 18px;
+      right: max(16px, env(safe-area-inset-right, 16px));
+      bottom: max(18px, env(safe-area-inset-bottom, 18px));
       display: grid;
       grid-template-columns: repeat(3, 50px);
       grid-template-rows: repeat(2, 50px);
@@ -569,7 +579,7 @@
       display: flex;
       align-items: center;
       justify-content: center;
-      touch-action: none;
+      touch-action: manipulation !important;
       box-shadow: 0 4px 12px rgba(0, 0, 0, 0.65);
     }
     .t-btn:active, .t-btn.active {
@@ -741,6 +751,7 @@
       <button class="retro-btn" id="btn-weapon-select" type="button">PISTOL: 9MM</button>
       <button class="retro-btn" id="btn-crosshair-select" type="button">AIM: CROSS</button>
       <button class="retro-btn" id="btn-vfx-select" type="button">VFX: VIVID</button>
+      <button class="retro-btn" id="btn-render-scale" type="button">RES: RETRO</button>
       <button class="retro-btn" id="btn-audio" type="button">SOUND: ON</button>
       <div class="setting-row">
         <div class="setting-head"><span>PAN SENSITIVITY</span><span id="val-look">1.0</span></div>
@@ -761,6 +772,7 @@
 
   <!-- Mobile / Tablet Touch Controls -->
   <div id="touch-controls">
+    <div id="joy-surface"></div>
     <div id="joy-zone">
       <div id="joy-knob"></div>
     </div>
@@ -1077,12 +1089,15 @@
       function updateRendererSize() {
         const w = window.innerWidth;
         const h = window.innerHeight;
-        const scale = Math.min(w, h) < 760 ? 0.68 : 0.78;
-        renderWidth = Math.max(1, Math.floor(w * scale));
-        renderHeight = Math.max(1, Math.floor(h * scale));
+        const isNative = (state && state.renderMode === 'NATIVE');
+        const dpr = isNative ? Math.min(window.devicePixelRatio || 1, 2.0) : 1.0;
+        const scale = isNative ? 1.0 : (Math.min(w, h) < 760 ? 0.72 : 0.82);
+        renderWidth = Math.max(1, Math.floor(w * scale * dpr));
+        renderHeight = Math.max(1, Math.floor(h * scale * dpr));
         renderer.setScissorTest(false);
         renderer.setSize(renderWidth, renderHeight, false);
         renderer.setViewport(0, 0, renderWidth, renderHeight);
+        canvas.style.imageRendering = isNative ? 'auto' : 'pixelated';
         camera.aspect = w / h;
         camera.updateProjectionMatrix();
       }
@@ -1317,9 +1332,19 @@
           if (distSq < radius * radius) {
             const dist = Math.sqrt(distSq);
             if (dist > 0.0001) {
+              const nx = dx / dist;
+              const nz = dz / dist;
               const push = radius - dist;
-              pos.x += (dx / dist) * push;
-              pos.z += (dz / dist) * push;
+              pos.x += nx * push;
+              pos.z += nz * push;
+              // Smooth Wall-Sliding: Nullify velocity component normal to the obstruction
+              if (state.currentVx !== undefined) {
+                const normalDot = state.currentVx * nx + state.currentVz * nz;
+                if (normalDot < 0) {
+                  state.currentVx -= normalDot * nx;
+                  state.currentVz -= normalDot * nz;
+                }
+              }
             } else {
               pos.x += radius;
             }
@@ -1610,6 +1635,134 @@
       frontSight.position.set(0, 0.084, -0.14);
       gunGroup.add(frontSight);
 
+      // Tactical Underbarrel Laser Sight Diode Emitter
+      const laserEmitter = new THREE.Object3D();
+      laserEmitter.position.set(0, 0.015, -0.28);
+      gunGroup.add(laserEmitter);
+
+      const gunLaserMat = new THREE.MeshBasicMaterial({
+        color: 0xff0033,
+        transparent: true,
+        opacity: 0.85,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false
+      });
+      const gunLaserGeo = new THREE.CylinderGeometry(0.002, 0.002, 1, 8);
+      gunLaserGeo.rotateX(Math.PI * 0.5);
+      gunLaserGeo.translate(0, 0, -0.5);
+      const gunLaserBeam = new THREE.Mesh(gunLaserGeo, gunLaserMat);
+      gunLaserBeam.visible = false;
+      scene.add(gunLaserBeam);
+
+      const dotCanvas = document.createElement('canvas');
+      dotCanvas.width = 64; dotCanvas.height = 64;
+      const dotCtx = dotCanvas.getContext('2d');
+      const dotGrad = dotCtx.createRadialGradient(32, 32, 0, 32, 32, 30);
+      dotGrad.addColorStop(0.0, 'rgba(255, 255, 255, 1.0)');
+      dotGrad.addColorStop(0.2, 'rgba(255, 45, 55, 0.95)');
+      dotGrad.addColorStop(0.5, 'rgba(255, 0, 20, 0.65)');
+      dotGrad.addColorStop(0.8, 'rgba(220, 0, 10, 0.22)');
+      dotGrad.addColorStop(1.0, 'rgba(255, 0, 0, 0.0)');
+      dotCtx.fillStyle = dotGrad;
+      dotCtx.beginPath();
+      dotCtx.arc(32, 32, 30, 0, Math.PI * 2);
+      dotCtx.fill();
+
+      const dotTex = new THREE.CanvasTexture(dotCanvas);
+      const laserDotMat = new THREE.MeshBasicMaterial({
+        map: dotTex,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        side: THREE.DoubleSide
+      });
+      const laserDotMesh = new THREE.Mesh(new THREE.PlaneGeometry(0.065, 0.065), laserDotMat);
+      laserDotMesh.visible = false;
+      scene.add(laserDotMesh);
+
+      const _laserP1 = new THREE.Vector3(), _laserP2 = new THREE.Vector3(), _laserP3 = new THREE.Vector3(), _laserP4 = new THREE.Vector3();
+      const _laserQ = new THREE.Quaternion(), _laserNegZ = new THREE.Vector3(0, 0, -1), _laserRay = new THREE.Raycaster();
+
+      function updateLaserSight() {
+        if (!state.running || state.countdown > 0 || (typeof vrMesh !== 'undefined' && vrMesh && vrMesh.visible)) {
+          gunLaserBeam.visible = false;
+          laserDotMesh.visible = false;
+          return;
+        }
+
+        gunGroup.updateMatrixWorld(true);
+        laserEmitter.getWorldPosition(_laserP1);
+
+        if (renderer.xr.isPresenting) {
+          laserEmitter.getWorldQuaternion(_laserQ);
+          _laserP2.set(0, 0, -1).applyQuaternion(_laserQ);
+        } else {
+          camera.getWorldPosition(_laserP3);
+          camera.getWorldDirection(_laserP4);
+          _laserRay.set(_laserP3, _laserP4);
+          _laserRay.far = 120;
+
+          const hitTargets = [];
+          for (let i = 0; i < enemies.length; i++) {
+            if (enemies[i].active && enemies[i].hitboxGroup) hitTargets.push(enemies[i].hitboxGroup);
+          }
+          const aimHits = _laserRay.intersectObjects(hitTargets, true);
+          let aimPoint;
+          if (aimHits.length > 0) {
+            aimPoint = aimHits[0].point;
+          } else {
+            if (_laserP4.y < -0.01) {
+              const gDist = -_laserP3.y / _laserP4.y;
+              aimPoint = (gDist > 0 && gDist < 80) ? _laserP3.clone().addScaledVector(_laserP4, gDist) : _laserP3.clone().addScaledVector(_laserP4, 50);
+            } else {
+              aimPoint = _laserP3.clone().addScaledVector(_laserP4, 50);
+            }
+          }
+          _laserP2.copy(aimPoint).sub(_laserP1).normalize();
+          _laserQ.setFromUnitVectors(_laserNegZ, _laserP2);
+        }
+
+        _laserRay.set(_laserP1, _laserP2);
+        _laserRay.far = 100;
+        const testTargets = [];
+        for (let i = 0; i < enemies.length; i++) {
+          if (enemies[i].active && enemies[i].hitboxGroup) testTargets.push(enemies[i].hitboxGroup);
+        }
+        const hits = _laserRay.intersectObjects(testTargets, true);
+
+        gunLaserBeam.position.copy(_laserP1);
+        gunLaserBeam.quaternion.copy(_laserQ);
+        gunLaserBeam.visible = true;
+
+        if (hits.length > 0) {
+          const hit = hits[0];
+          const dist = _laserP1.distanceTo(hit.point);
+          gunLaserBeam.scale.z = dist;
+          laserDotMesh.position.copy(hit.point).addScaledVector(_laserP2, -0.015);
+          laserDotMesh.quaternion.copy(camera.quaternion);
+          const dotScale = Math.max(0.04, Math.min(0.18, dist * 0.015));
+          laserDotMesh.scale.set(dotScale / 0.065, dotScale / 0.065, dotScale / 0.065);
+          laserDotMesh.visible = true;
+        } else if (_laserP2.y < -0.005) {
+          const gDist = -_laserP1.y / _laserP2.y;
+          if (gDist > 0 && gDist < 60) {
+            gunLaserBeam.scale.z = gDist;
+            laserDotMesh.position.copy(_laserP1).addScaledVector(_laserP2, gDist);
+            laserDotMesh.position.y = 0.02;
+            laserDotMesh.rotation.set(-Math.PI * 0.5, 0, 0);
+            const dotScale = Math.max(0.04, Math.min(0.2, gDist * 0.015));
+            laserDotMesh.scale.set(dotScale / 0.065, dotScale / 0.065, dotScale / 0.065);
+            laserDotMesh.visible = true;
+          } else {
+            gunLaserBeam.scale.z = 60;
+            laserDotMesh.visible = false;
+          }
+        } else {
+          gunLaserBeam.scale.z = 60;
+          laserDotMesh.visible = false;
+        }
+      }
+
       // 3D Muzzle Flash Star Burst attached to Barrel Tip
       const muzzleFlashGroup = new THREE.Group();
       muzzleFlashGroup.position.set(0, 0.052, -0.32);
@@ -1847,13 +2000,18 @@
         group.traverse((child) => {
           if (child.isMesh) {
             child.userData.enemyRef = en;
-            enemyHitboxes.push(child);
+            if (enemyHitboxes.indexOf(child) === -1) {
+              enemyHitboxes.push(child);
+            }
           }
         });
       }
 
       function createHorrorEntity(type) {
         const root = new THREE.Group();
+        const visGroup = new THREE.Group();
+        root.add(visGroup);
+
         const skinColor = type === 'WATCHER' ? 0x64748b : (type === 'BRUTE' ? 0x3b1d2e : (type === 'HOUND' ? 0x3b190b : (type === 'BAT' ? 0x2a0f30 : 0x3d4b41)));
         const clothColor = type === 'WATCHER' ? 0x334155 : (type === 'BRUTE' ? 0x1e1118 : 0x1c2128);
         const bodyMat = new THREE.MeshLambertMaterial({ color: skinColor });
@@ -1890,7 +2048,7 @@
           const legBR = new THREE.Mesh(legGeo, bodyMat);
           legBR.position.set(0.18, 0.26, -0.42);
 
-          root.add(torso, spine, head, snout, eyeL, eyeR, legFL, legFR, legBL, legBR);
+          visGroup.add(torso, spine, head, snout, eyeL, eyeR, legFL, legFR, legBL, legBR);
           animParts = { legL: legFL, legR: legFR, armL: legBL, armR: legBR, head };
         } else if (type === 'BAT') {
           const core = new THREE.Mesh(new THREE.SphereGeometry(0.28, 7, 7), bodyMat);
@@ -1904,7 +2062,7 @@
           const eyeR = eyeL.clone();
           eyeL.position.set(-0.09, 0.06, 0.25);
           eyeR.position.set(0.09, 0.06, 0.25);
-          root.add(core, ears, wingL, wingR, eyeL, eyeR);
+          visGroup.add(core, ears, wingL, wingR, eyeL, eyeR);
           animParts = { wingL, wingR };
         } else {
           // Articulated Humanoid Zombie / Watcher / Towering Brute Boss
@@ -1980,17 +2138,52 @@
           legR.position.set(0.17, 0.36, 0);
 
           figure.add(pelvis, torso, coreGlow, headGroup, armL, armR, legL, legR);
-          root.add(figure);
+          visGroup.add(figure);
           animParts = { armL, armR, legL, legR, head: headGroup };
         }
 
-        enhanceEntity(type, root, animParts, skinColor, clothColor);
+        enhanceEntity(type, visGroup, animParts, skinColor, clothColor);
+
+        // --- Compound Invisible Collision Hitbox Hierarchy ---
+        // Guaranteed raycast registration across both procedural & GLB skeletal meshes
+        const hitboxGroup = new THREE.Group();
+        root.add(hitboxGroup);
+        const hitMat = new THREE.MeshBasicMaterial({ visible: false });
+
+        if (type === 'HOUND') {
+          const bodyHit = new THREE.Mesh(new THREE.BoxGeometry(0.65, 0.55, 1.35), hitMat);
+          bodyHit.position.set(0, 0.55, 0);
+          const headHit = new THREE.Mesh(new THREE.SphereGeometry(0.32, 6, 6), hitMat);
+          headHit.position.set(0, 0.75, 0.65);
+          headHit.userData.isHead = true;
+          hitboxGroup.add(bodyHit, headHit);
+        } else if (type === 'BAT') {
+          const bodyHit = new THREE.Mesh(new THREE.SphereGeometry(0.52, 6, 6), hitMat);
+          const headHit = new THREE.Mesh(new THREE.SphereGeometry(0.25, 6, 6), hitMat);
+          headHit.position.set(0, 0.15, 0.25);
+          headHit.userData.isHead = true;
+          hitboxGroup.add(bodyHit, headHit);
+        } else {
+          // Humanoid: ZOMBIE / WATCHER / BRUTE
+          const isBrute = type === 'BRUTE';
+          const scale = isBrute ? 1.68 : 1.0;
+          const torsoHit = new THREE.Mesh(new THREE.CylinderGeometry(0.38 * scale, 0.34 * scale, 1.15 * scale, 8), hitMat);
+          torsoHit.position.y = 0.88 * scale;
+          const headHit = new THREE.Mesh(new THREE.SphereGeometry(0.32 * scale, 6, 6), hitMat);
+          headHit.position.set(0, 1.82 * scale, 0.04 * scale);
+          headHit.userData.isHead = true;
+          hitboxGroup.add(torsoHit, headHit);
+        }
+
+        enhanceEntity(type, visGroup, animParts, skinColor, clothColor);
         const maxHp = type === 'BRUTE' ? 210 : (type === 'WATCHER' ? 95 : (type === 'HOUND' ? 55 : (type === 'BAT' ? 40 : 75)));
         const speed = type === 'HOUND' ? 5.2 : (type === 'WATCHER' ? 6.1 : (type === 'BAT' ? 4.6 : (type === 'BRUTE' ? 2.65 : 3.45)));
 
         const en = {
           type,
           root,
+          visGroup,
+          hitboxGroup,
           animParts,
           hp: maxHp,
           maxHp,
@@ -2003,7 +2196,8 @@
           groanTimer: 2 + Math.random() * 4,
           attackCooldown: 0
         };
-        tagEnemyHitMeshes(root, en);
+        tagEnemyHitMeshes(hitboxGroup, en);
+        tagEnemyHitMeshes(visGroup, en);
         enemyGroup.add(root);
         return en;
       }
@@ -2043,6 +2237,7 @@
         weaponIdx: 0,
         crosshairIdx: 0,
         vividVfx: true,
+        renderMode: (localStorage.getItem('dread98-res') || 'RETRO'),
         ammo: 12,
         maxAmmo: 12,
         reserveAmmo: 48,
@@ -2054,6 +2249,10 @@
         yaw: 0,
         pitch: 0,
         vy: 0,
+        currentVx: 0,
+        currentVz: 0,
+        jumpBufferTimer: 0,
+        coyoteTimer: 0,
         onGround: true,
         bobTime: 0,
         stepAccum: 0,
@@ -2492,6 +2691,7 @@
         const mpHit = MP.active ? MP.rayPlayers(raycaster, wallDist, w.damage) : null;
         let hitEnemy = null;
         let hitPoint = null;
+        let isHeadshot = false;
         for (let i = 0; i < enemyHits.length; i++) {
           const candidate = enemyHits[i];
           if (candidate.distance >= wallDist) break;
@@ -2499,6 +2699,8 @@
           if (en && en.alive) {
             hitEnemy = en;
             hitPoint = candidate.point;
+            const relY = hitPoint.y - en.root.position.y;
+            isHeadshot = !!candidate.object.userData.isHead || (relY >= (en.type === 'BRUTE' ? 2.2 : (en.type === 'HOUND' ? 0.62 : 1.52)));
             break;
           }
         }
@@ -2510,12 +2712,13 @@
           setTimeout(() => { hitmarker.style.opacity = '0'; }, 95);
         } else if (hitEnemy && hitPoint) {
           endVec = hitPoint;
-          hitEnemy.hp -= w.damage;
+          const actualDmg = isHeadshot ? Math.round(w.damage * 2.5) : w.damage;
+          hitEnemy.hp -= actualDmg;
           hitEnemy.hitFlash = 0.12;
-          spawnBurst(hitPoint, 4, 0xdc2626);
-          fxHit(hitEnemy, hitPoint, w.damage);
+          spawnBurst(hitPoint, isHeadshot ? 8 : 4, isHeadshot ? 0xff0033 : 0xdc2626);
+          fxHit(hitEnemy, hitPoint, actualDmg, isHeadshot);
           hitmarker.style.opacity = '1';
-          hitmarker.style.transform = 'translate(-50%, -50%) scale(1.12)';
+          hitmarker.style.transform = isHeadshot ? 'translate(-50%, -50%) scale(1.4)' : 'translate(-50%, -50%) scale(1.12)';
           setTimeout(() => {
             hitmarker.style.opacity = '0';
             hitmarker.style.transform = 'translate(-50%, -50%) scale(0.65)';
@@ -2526,7 +2729,7 @@
             fxKill(hitEnemy, hitPoint);
             hitEnemy.respawnTimer = DIFF().respawn[0] + Math.random() * (DIFF().respawn[1] - DIFF().respawn[0]);
             state.kills++;
-            spawnBurst(hitPoint, 14, getCurrentArchetype().neonB);
+            spawnBurst(hitPoint, isHeadshot ? 22 : 14, isHeadshot ? 0xff0033 : getCurrentArchetype().neonB);
 
             if (state.kills >= state.totalQuota && !MP.active) {
               const nextScene = (state.stageNum % SCENE_ARCHETYPES.length) + 1;
@@ -2566,9 +2769,8 @@
         if (e.code === 'Digit1') equipPistol(0);
         if (e.code === 'Digit2') equipPistol(1);
         if (e.code === 'Digit3') equipPistol(2);
-        if (e.code === 'Space' && state.onGround) {
-          state.vy = 5.6;
-          state.onGround = false;
+        if (e.code === 'Space') {
+          state.jumpBufferTimer = 0.16;
         }
       });
 
@@ -2609,46 +2811,86 @@
         }
       });
 
-      // Touch Joystick & Right-Side Look Pan
+      // Touch Joystick (Floating Dynamic Surface) & Right-Side Look Pan
       const joyZone = document.getElementById('joy-zone');
       const joyKnob = document.getElementById('joy-knob');
+      const joySurface = document.getElementById('joy-surface');
       const lookZone = document.getElementById('look-zone');
+      const touchActionsWrap = document.querySelector('.touch-actions');
       let joyTouchId = null;
       let joyVec = { x: 0, y: 0 };
+      let joyBaseX = 0;
+      let joyBaseY = 0;
       let lookTouchId = null;
       let lastLookX = 0;
       let lastLookY = 0;
 
-      joyZone.addEventListener('touchstart', (e) => {
+      function isTouchOverActionButtons(touch) {
+        if (!touchActionsWrap) return false;
+        const r = touchActionsWrap.getBoundingClientRect();
+        return touch.clientX >= (r.left - 24) && touch.clientY >= (r.top - 24);
+      }
+
+      function onJoyTouchStart(e) {
         activeDeviceIsTouch = true;
         syncControlModeUI();
-        const t = e.changedTouches[0];
-        joyTouchId = t.identifier;
-        updateJoystick(t);
-      }, { passive: false });
+        for (let i = 0; i < e.changedTouches.length; i++) {
+          const t = e.changedTouches[i];
+          if (joyTouchId === null) {
+            joyTouchId = t.identifier;
+            joyBaseX = t.clientX;
+            joyBaseY = t.clientY;
+            joyZone.style.left = `${t.clientX - 62}px`;
+            joyZone.style.top = `${t.clientY - 62}px`;
+            joyZone.style.bottom = 'auto';
+            joyZone.style.opacity = '0.9';
+            updateJoystick(t);
+            break;
+          }
+        }
+      }
 
-      joyZone.addEventListener('touchmove', (e) => {
+      function onJoyTouchMove(e) {
         for (let i = 0; i < e.changedTouches.length; i++) {
           if (e.changedTouches[i].identifier === joyTouchId) {
             updateJoystick(e.changedTouches[i]);
           }
         }
-      }, { passive: false });
+      }
 
-      function resetJoystick() {
+      function resetJoystick(e) {
+        if (e && e.changedTouches) {
+          let found = false;
+          for (let i = 0; i < e.changedTouches.length; i++) {
+            if (e.changedTouches[i].identifier === joyTouchId) found = true;
+          }
+          if (!found) return;
+        }
         joyTouchId = null;
         joyVec.x = 0;
         joyVec.y = 0;
         joyKnob.style.transform = 'translate(0px, 0px)';
+        joyZone.style.left = '';
+        joyZone.style.top = '';
+        joyZone.style.bottom = 'max(18px, env(safe-area-inset-bottom, 18px))';
+        joyZone.style.opacity = '0.45';
       }
+
+      if (joySurface) {
+        joySurface.addEventListener('touchstart', onJoyTouchStart, { passive: false });
+        joySurface.addEventListener('touchmove', onJoyTouchMove, { passive: false });
+        joySurface.addEventListener('touchend', resetJoystick);
+        joySurface.addEventListener('touchcancel', resetJoystick);
+      }
+      joyZone.addEventListener('touchstart', onJoyTouchStart, { passive: false });
+      joyZone.addEventListener('touchmove', onJoyTouchMove, { passive: false });
       joyZone.addEventListener('touchend', resetJoystick);
       joyZone.addEventListener('touchcancel', resetJoystick);
 
       function updateJoystick(touch) {
-        const rect = joyZone.getBoundingClientRect();
-        const cx = rect.left + rect.width * 0.5;
-        const cy = rect.top + rect.height * 0.5;
-        const maxR = rect.width * 0.42;
+        const cx = joyBaseX || (joyZone.getBoundingClientRect().left + 62);
+        const cy = joyBaseY || (joyZone.getBoundingClientRect().top + 62);
+        const maxR = 52;
         let dx = touch.clientX - cx;
         let dy = touch.clientY - cy;
         const d = Math.hypot(dx, dy);
@@ -2662,10 +2904,16 @@
       }
 
       lookZone.addEventListener('touchstart', (e) => {
-        const t = e.changedTouches[0];
-        lookTouchId = t.identifier;
-        lastLookX = t.clientX;
-        lastLookY = t.clientY;
+        for (let i = 0; i < e.changedTouches.length; i++) {
+          const t = e.changedTouches[i];
+          if (isTouchOverActionButtons(t)) continue;
+          if (lookTouchId === null) {
+            lookTouchId = t.identifier;
+            lastLookX = t.clientX;
+            lastLookY = t.clientY;
+            break;
+          }
+        }
       }, { passive: false });
 
       lookZone.addEventListener('touchmove', (e) => {
@@ -2683,7 +2931,16 @@
         }
       }, { passive: false });
 
-      lookZone.addEventListener('touchend', () => { lookTouchId = null; });
+      function onLookTouchEnd(e) {
+        for (let i = 0; i < e.changedTouches.length; i++) {
+          if (e.changedTouches[i].identifier === lookTouchId) {
+            lookTouchId = null;
+            break;
+          }
+        }
+      }
+      lookZone.addEventListener('touchend', onLookTouchEnd);
+      lookZone.addEventListener('touchcancel', onLookTouchEnd);
 
       // Touch Action Icon Buttons
       document.getElementById('btn-fire').addEventListener('touchstart', (e) => {
@@ -2704,10 +2961,7 @@
       });
       document.getElementById('btn-jump').addEventListener('touchstart', (e) => {
         e.preventDefault();
-        if (state.onGround) {
-          state.vy = 5.6;
-          state.onGround = false;
-        }
+        state.jumpBufferTimer = 0.16;
       });
       document.getElementById('btn-crank').addEventListener('touchstart', (e) => {
         e.preventDefault();
@@ -2741,6 +2995,9 @@
         if (document.pointerLockElement === canvas && document.exitPointerLock) {
           document.exitPointerLock();
         }
+        if (renderer.xr && renderer.xr.isPresenting && typeof vrUI !== 'undefined') {
+          vrUI.show(statusText || 'OPERATIONS PAUSED');
+        }
       }
 
       function startGame() {
@@ -2761,6 +3018,10 @@
           menuOverlay.style.display = 'none';
           hudEl.style.display = 'block';
           syncControlModeUI();
+
+          if (renderer.xr && renderer.xr.isPresenting && typeof vrUI !== 'undefined') {
+            vrUI.hide();
+          }
 
           if (!activeDeviceIsTouch && canvas.requestPointerLock) {
             try {
@@ -2820,6 +3081,17 @@
         btnVfxSelect.textContent = state.vividVfx ? 'VFX: VIVID' : 'VFX: CLASSIC';
         loadStage(state.stageNum);
       });
+
+      const btnRenderScale = document.getElementById('btn-render-scale');
+      if (btnRenderScale) {
+        btnRenderScale.textContent = `RES: ${state.renderMode}`;
+        btnRenderScale.addEventListener('click', () => {
+          state.renderMode = state.renderMode === 'RETRO' ? 'NATIVE' : 'RETRO';
+          try { localStorage.setItem('dread98-res', state.renderMode); } catch (_) {}
+          btnRenderScale.textContent = `RES: ${state.renderMode}`;
+          updateRendererSize();
+        });
+      }
 
       btnAudio.addEventListener('click', () => {
         audio.enabled = !audio.enabled;
@@ -3078,12 +3350,33 @@
         const speed = state.zoomed ? 4.2 : 6.4;
         const sinY = Math.sin(state.yaw);
         const cosY = Math.cos(state.yaw);
-        const vx = (-sinY * moveForward + cosY * moveRight) * speed;
-        const vz = (-cosY * moveForward - sinY * moveRight) * speed;
+        const targetVx = (-sinY * moveForward + cosY * moveRight) * speed;
+        const targetVz = (-cosY * moveForward - sinY * moveRight) * speed;
 
-        playerPos.x += vx * dt;
-        playerPos.z += vz * dt;
+        // Grounded momentum acceleration & deceleration
+        const accel = state.onGround ? 16.0 : 8.0;
+        state.currentVx += (targetVx - state.currentVx) * Math.min(1.0, accel * dt);
+        state.currentVz += (targetVz - state.currentVz) * Math.min(1.0, accel * dt);
+
+        playerPos.x += state.currentVx * dt;
+        playerPos.z += state.currentVz * dt;
         resolveCircleColliders(playerPos, 0.55);
+
+        // Jump Buffering & Coyote Time
+        if (state.onGround) {
+          state.coyoteTimer = 0.12;
+        } else {
+          state.coyoteTimer = Math.max(0, state.coyoteTimer - dt);
+        }
+        if (state.jumpBufferTimer > 0) {
+          state.jumpBufferTimer = Math.max(0, state.jumpBufferTimer - dt);
+          if (state.coyoteTimer > 0) {
+            state.vy = 5.8;
+            state.onGround = false;
+            state.coyoteTimer = 0;
+            state.jumpBufferTimer = 0;
+          }
+        }
 
         state.vy -= 15.5 * dt;
         playerPos.y += state.vy * dt;
@@ -3093,7 +3386,8 @@
           state.onGround = true;
         }
 
-        if (mLen > 0.15 && state.onGround) {
+        const actualSpeed = Math.hypot(state.currentVx, state.currentVz);
+        if (actualSpeed > 0.4 && state.onGround) {
           state.bobTime += dt * 10.5;
           state.stepAccum += dt;
           if (state.stepAccum >= 0.42) {
@@ -3308,9 +3602,10 @@
       }
 
       function renderSceneFrame() {
-        const dt = Math.min(clock.getDelta(), 0.05);
+        const dt = Math.max(0.001, Math.min(clock.getDelta(), 0.033));
         updateSimulation(dt);
         modsUpdate(dt);
+        updateLaserSight();
         renderer.render(scene, camera);
       }
 
@@ -3640,24 +3935,370 @@
       document.addEventListener('fullscreenchange', () => { setTimeout(updateRendererSize, 120); });
 
       // ---- WebXR (Meta Quest 2/3/Pro, any immersive-vr headset)
+      const _vrP1 = new THREE.Vector3(), _vrP2 = new THREE.Vector3();
+      const _vrRay = new THREE.Raycaster();
+
+      // In-VR 3D Holographic Menu Billboard (Option 2 Archival Retro Theme)
+      const vrCanvas = document.createElement('canvas');
+      vrCanvas.width = 1024;
+      vrCanvas.height = 640;
+      const vrx = vrCanvas.getContext('2d');
+      const vrTex = new THREE.CanvasTexture(vrCanvas);
+      const vrMat = new THREE.MeshBasicMaterial({ map: vrTex, transparent: true, depthWrite: false, side: THREE.DoubleSide });
+      const vrMesh = new THREE.Mesh(new THREE.PlaneGeometry(2.35, 1.47), vrMat);
+      vrMesh.visible = false;
+      vrMesh.renderOrder = 999;
+      scene.add(vrMesh);
+
+      // Frame around Billboard
+      const vrFrame = new THREE.Group();
+      const vrFrameMat = new THREE.MeshLambertMaterial({ color: 0x0f172a });
+      const createBorderBar = (w, h, d, x, y, z) => {
+        const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), vrFrameMat);
+        m.position.set(x, y, z);
+        return m;
+      };
+      vrFrame.add(
+        createBorderBar(2.38, 0.02, 0.03, 0, 0.74, -0.01),
+        createBorderBar(2.38, 0.02, 0.03, 0, -0.74, -0.01),
+        createBorderBar(0.02, 1.48, 0.03, -1.18, 0, -0.01),
+        createBorderBar(0.02, 1.48, 0.03, 1.18, 0, -0.01)
+      );
+      vrMesh.add(vrFrame);
+
+      const vrButtons = [];
+      let activeVRHoverBtn = null;
+
+      const vrUI = {
+        mode: 'MENU',
+        statusMsg: '',
+        show(statusText = 'OPERATIONS BRIEFING') {
+          this.statusMsg = statusText;
+          camera.getWorldPosition(_vrP1);
+          camera.getWorldDirection(_vrP2);
+          _vrP2.y = 0;
+          _vrP2.normalize();
+          vrMesh.position.copy(_vrP1).addScaledVector(_vrP2, 2.0);
+          vrMesh.position.y = Math.max(1.2, _vrP1.y);
+          vrMesh.lookAt(_vrP1.x, vrMesh.position.y, _vrP1.z);
+          vrMesh.visible = true;
+          this.draw(null);
+        },
+        hide() {
+          vrMesh.visible = false;
+          activeVRHoverBtn = null;
+          xrCtl.forEach(c => {
+            if (c.userData.laser) c.userData.laser.visible = false;
+            if (c.userData.dot) c.userData.dot.visible = false;
+          });
+        },
+        draw(hoveredId = null) {
+          vrButtons.length = 0;
+          vrx.clearRect(0, 0, 1024, 640);
+
+          // Archival Terminal Frame & Background
+          vrx.fillStyle = 'rgba(7, 11, 18, 0.95)';
+          vrx.fillRect(0, 0, 1024, 640);
+
+          // High-contrast tactical border
+          const isAlert = (this.statusMsg === 'DEAD' || this.statusMsg === 'CONTAINMENT BREACH');
+          vrx.strokeStyle = isAlert ? '#ef4444' : '#38bdf8';
+          vrx.lineWidth = 6;
+          vrx.strokeRect(4, 4, 1016, 632);
+
+          // Top Header Banner
+          vrx.fillStyle = '#0f172a';
+          vrx.fillRect(8, 8, 1008, 64);
+          vrx.strokeStyle = '#1e293b';
+          vrx.lineWidth = 2;
+          vrx.strokeRect(8, 8, 1008, 64);
+
+          vrx.font = 'bold 26px "Courier New", monospace';
+          vrx.fillStyle = '#f8fafc';
+          vrx.textAlign = 'left';
+          vrx.fillText('DREAD98 ARCHIVAL RETRO OPERATIONS TERMINAL', 32, 50);
+
+          // Status / Mode Banner
+          vrx.font = 'bold 22px "Courier New", monospace';
+          vrx.fillStyle = isAlert ? '#f87171' : '#38bdf8';
+          vrx.textAlign = 'right';
+          vrx.fillText(this.statusMsg || (state.running ? 'PAUSED' : 'READY'), 992, 50);
+
+          // Mission Telemetry Grid Box
+          vrx.fillStyle = 'rgba(15, 23, 42, 0.7)';
+          vrx.fillRect(64, 100, 896, 90);
+          vrx.strokeStyle = '#334155';
+          vrx.strokeRect(64, 100, 896, 90);
+
+          vrx.font = '18px "Courier New", monospace';
+          vrx.fillStyle = '#94a3b8';
+          vrx.textAlign = 'left';
+          vrx.fillText('SECTOR: ' + STAGES[state.stageNum - 1].name.toUpperCase() + '  |  HEALTH: ' + Math.ceil(state.hp) + '%  |  QUOTA: ' + state.kills + '/' + state.totalQuota, 84, 134);
+          vrx.fillText('WEAPON: ' + PISTOLS[state.weaponIdx].id + '  |  AMMO: ' + state.ammo + '/' + state.reserveAmmo + '  |  TORCH: ' + (state.torchOn ? 'ON' : 'OFF'), 84, 168);
+
+          // Draw Interactive Buttons
+          const btnConfigs = [
+            {
+              id: 'start',
+              text: state.running ? 'RESUME OPERATIONS' : (state.hp <= 0 ? 'RETRY MISSION' : 'START MISSION'),
+              x: 64, y: 220, w: 896, h: 64,
+              accent: '#22c55e',
+              action: () => { vrUI.hide(); startGame(); }
+            },
+            {
+              id: 'stage',
+              text: 'SECTOR: ' + STAGES[state.stageNum - 1].name.toUpperCase() + ' (CYCLE)',
+              x: 64, y: 300, w: 436, h: 60,
+              accent: '#38bdf8',
+              action: () => {
+                loadStage((state.stageNum % STAGES.length) + 1);
+                vrUI.draw(hoveredId);
+              }
+            },
+            {
+              id: 'weapon',
+              text: 'WEAPON: ' + PISTOLS[state.weaponIdx].id + ' (CYCLE)',
+              x: 524, y: 300, w: 436, h: 60,
+              accent: '#38bdf8',
+              action: () => {
+                equipPistol((state.weaponIdx + 1) % PISTOLS.length);
+                vrUI.draw(hoveredId);
+              }
+            },
+            {
+              id: 'torch',
+              text: 'TORCH: ' + (state.torchOn ? 'ACTIVE' : 'STANDBY'),
+              x: 64, y: 380, w: 436, h: 60,
+              accent: '#eab308',
+              action: () => {
+                cycleTorch();
+                vrUI.draw(hoveredId);
+              }
+            },
+            {
+              id: 'diff',
+              text: 'DIFFICULTY: ' + state.diff.toUpperCase(),
+              x: 524, y: 380, w: 436, h: 60,
+              accent: '#a855f7',
+              action: () => {
+                const diffs = ['easy', 'normal', 'hard'];
+                const nextIdx = (diffs.indexOf(state.diff) + 1) % diffs.length;
+                applyDifficulty(diffs[nextIdx]);
+                vrUI.draw(hoveredId);
+              }
+            },
+            {
+              id: 'exit',
+              text: 'EXIT IMMERSIVE VR SESSION',
+              x: 64, y: 460, w: 896, h: 56,
+              accent: '#ef4444',
+              action: () => {
+                const session = renderer.xr.getSession();
+                if (session) session.end();
+              }
+            }
+          ];
+
+          btnConfigs.forEach(b => {
+            vrButtons.push(b);
+            const isHov = (b.id === hoveredId);
+            vrx.fillStyle = isHov ? 'rgba(30, 41, 59, 0.95)' : 'rgba(15, 23, 42, 0.85)';
+            vrx.fillRect(b.x, b.y, b.w, b.h);
+
+            vrx.strokeStyle = isHov ? '#f8fafc' : b.accent;
+            vrx.lineWidth = isHov ? 4 : 2;
+            vrx.strokeRect(b.x, b.y, b.w, b.h);
+
+            vrx.font = (isHov ? 'bold ' : '') + '20px "Courier New", monospace';
+            vrx.fillStyle = isHov ? '#ffffff' : b.accent;
+            vrx.textAlign = 'center';
+            vrx.fillText(b.text, b.x + b.w / 2, b.y + b.h / 2 + 7);
+          });
+
+          // Operational Instruction at bottom
+          vrx.font = '15px "Courier New", monospace';
+          vrx.fillStyle = '#64748b';
+          vrx.textAlign = 'center';
+          vrx.fillText('POINT CONTROLLER RAY & PULL TRIGGER TO SELECT', 512, 570);
+          vrx.fillText('LEFT STICK: MOVE | RIGHT STICK: SNAP TURN | SQUEEZE: RELOAD', 512, 600);
+
+          vrTex.needsUpdate = true;
+        }
+      };
+
+      function executeVRButtonClick(btn, ctrl) {
+        if (!btn) return;
+        if (ctrl) {
+          const session = renderer.xr.getSession();
+          if (session) {
+            for (const src of session.inputSources) {
+              if (src.handedness === ctrl.userData.hand && src.gamepad && src.gamepad.hapticActuators && src.gamepad.hapticActuators[0]) {
+                try { src.gamepad.hapticActuators[0].pulse(0.8, 60); } catch (_) {}
+              }
+            }
+          }
+        }
+        audio.playUiClick();
+        btn.action();
+      }
+
+      function pollVRUIInteraction() {
+        if (!vrMesh || !vrMesh.visible) {
+          xrCtl.forEach(c => {
+            if (c.userData.laser) c.userData.laser.visible = false;
+            if (c.userData.dot) c.userData.dot.visible = false;
+          });
+          activeVRHoverBtn = null;
+          return;
+        }
+
+        let bestHit = null;
+        let bestCtrl = null;
+        let bestDist = Infinity;
+        let hoveredBtn = null;
+
+        xrCtl.forEach(c => {
+          if (!c) return;
+          c.getWorldPosition(_vrP1);
+          c.getWorldQuaternion(_xrQ);
+          _vrP2.set(0, 0, -1).applyQuaternion(_xrQ);
+
+          _vrRay.set(_vrP1, _vrP2);
+          const hits = _vrRay.intersectObject(vrMesh);
+          if (hits.length > 0) {
+            const hit = hits[0];
+            const dist = _vrP1.distanceTo(hit.point);
+            if (dist < bestDist) {
+              bestDist = dist;
+              bestHit = hit;
+              bestCtrl = c;
+            }
+
+            if (c.userData.laser) {
+              c.userData.laser.visible = true;
+              c.userData.laser.scale.z = dist;
+            }
+            if (c.userData.dot) {
+              c.userData.dot.position.copy(hit.point).addScaledVector(_vrP2, -0.01);
+              c.userData.dot.quaternion.copy(vrMesh.quaternion);
+              c.userData.dot.visible = true;
+            }
+
+            const px = hit.uv.x * 1024;
+            const py = (1.0 - hit.uv.y) * 640;
+
+            for (const btn of vrButtons) {
+              if (px >= btn.x && px <= btn.x + btn.w && py >= btn.y && py <= btn.y + btn.h) {
+                hoveredBtn = btn;
+                break;
+              }
+            }
+
+            const isHover = !!hoveredBtn;
+            if (c.userData.laser && c.userData.laser.material) {
+              c.userData.laser.material.color.setHex(isHover ? 0x22d3ee : 0xef4444);
+            }
+            if (c.userData.dot && c.userData.dot.material) {
+              c.userData.dot.material.color.setHex(isHover ? 0x38bdf8 : 0xef4444);
+            }
+          } else {
+            if (c.userData.laser) c.userData.laser.visible = false;
+            if (c.userData.dot) c.userData.dot.visible = false;
+          }
+        });
+
+        if (hoveredBtn !== activeVRHoverBtn) {
+          if (hoveredBtn && bestCtrl) {
+            const session = renderer.xr.getSession();
+            if (session) {
+              for (const src of session.inputSources) {
+                if (src.handedness === bestCtrl.userData.hand && src.gamepad && src.gamepad.hapticActuators && src.gamepad.hapticActuators[0]) {
+                  try { src.gamepad.hapticActuators[0].pulse(0.25, 20); } catch (_) {}
+                }
+              }
+            }
+          }
+          activeVRHoverBtn = hoveredBtn;
+          vrUI.draw(hoveredBtn ? hoveredBtn.id : null);
+        }
+      }
+
       const xrCtl = [renderer.xr.getController(0), renderer.xr.getController(1)];
-      xrCtl.forEach((c) => { playerRig.add(c); c.addEventListener('connected', (e) => { c.userData.hand = e.data.handedness; if (e.data.handedness === 'right' || (!xrGunHolder && e.data.handedness !== 'left')) attachGunXR(c); }); });
-      let xrGunHolder = null, xrTurn = 0, xrSnap = 0, xrBtnPrev = {}, xrRetry = 0, xrHudT = 0, xrLastAmmo = 0;
-      function attachGunXR(c) { xrGunHolder = c; c.add(gunGroup); gunGroup.position.set(0, 0, 0); gunGroup.rotation.set(-0.12, 0, 0); gunGroup.scale.setScalar(1.1); }
-      const xrHud = (() => { const cv = document.createElement('canvas'); cv.width = 256; cv.height = 128; const tex = new THREE.CanvasTexture(cv); const m = new THREE.Mesh(new THREE.PlaneGeometry(0.14, 0.07), new THREE.MeshBasicMaterial({ map: tex, transparent: true })); m.position.set(0, 0.11, -0.12); m.rotation.x = -0.9; m.visible = false; gunGroup.add(m); return { cv, tex, m }; })();
+      xrCtl.forEach((c) => {
+        playerRig.add(c);
+
+        const pointerGeo = new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, 0, -1)]);
+        const pointerMat = new THREE.LineBasicMaterial({ color: 0xef4444, transparent: true, opacity: 0.8 });
+        const laserLine = new THREE.Line(pointerGeo, pointerMat);
+        laserLine.visible = false;
+        c.add(laserLine);
+        c.userData.laser = laserLine;
+
+        const dotMesh = new THREE.Mesh(
+          new THREE.RingGeometry(0.015, 0.035, 16),
+          new THREE.MeshBasicMaterial({ color: 0xef4444, side: THREE.DoubleSide, depthTest: false })
+        );
+        dotMesh.visible = false;
+        dotMesh.renderOrder = 1000;
+        scene.add(dotMesh);
+        c.userData.dot = dotMesh;
+
+        c.addEventListener('selectstart', () => {
+          if (vrMesh && vrMesh.visible && activeVRHoverBtn) {
+            executeVRButtonClick(activeVRHoverBtn, c);
+          }
+        });
+
+        c.addEventListener('connected', (e) => {
+          c.userData.hand = e.data.handedness;
+          if (e.data.handedness === 'right' || (!xrGunHolder && e.data.handedness !== 'left')) attachGunXR(c);
+        });
+      });
+
+      let xrGunHolder = null, xrTurn = 0, xrSnap = 0, xrBtnPrev = {}, xrHudT = 0, xrLastAmmo = 0;
+      function attachGunXR(c) {
+        xrGunHolder = c;
+        c.add(gunGroup);
+        gunGroup.position.set(0, 0, 0);
+        gunGroup.rotation.set(-0.12, 0, 0);
+        gunGroup.scale.setScalar(1.1);
+      }
+
+      const xrHud = (() => {
+        const cv = document.createElement('canvas'); cv.width = 256; cv.height = 128;
+        const tex = new THREE.CanvasTexture(cv);
+        const m = new THREE.Mesh(new THREE.PlaneGeometry(0.14, 0.07), new THREE.MeshBasicMaterial({ map: tex, transparent: true }));
+        m.position.set(0, 0.11, -0.12); m.rotation.x = -0.9; m.visible = false;
+        gunGroup.add(m);
+        return { cv, tex, m };
+      })();
+
       function drawXrHud() {
         const x = xrHud.cv.getContext('2d'); x.clearRect(0, 0, 256, 128); x.fillStyle = 'rgba(0,0,0,0.55)'; x.fillRect(0, 0, 256, 128);
         x.font = 'bold 46px Courier New'; x.fillStyle = '#38bdf8'; x.fillText('AMMO ' + state.ammo + '/' + state.reserveAmmo, 10, 52);
         x.fillStyle = state.hp < 35 ? '#ef4444' : '#86efac'; x.fillText('HP ' + Math.ceil(state.hp), 10, 108); xrHud.tex.needsUpdate = true;
       }
+
       renderer.xr.addEventListener('sessionstart', () => {
+        if (renderer.xr.setFoveation) {
+          try { renderer.xr.setFoveation(1.0); } catch (_) {}
+        }
         xrHud.m.visible = true; xrTurn = 0; goFullscreen();
         if (!xrGunHolder) { const c = xrCtl[1]; attachGunXR(c); }
-        if (!state.running) startGame();
+        if (!state.running) {
+          vrUI.show('MISSION BRIEFING');
+        } else {
+          vrUI.hide();
+        }
       });
+
       renderer.xr.addEventListener('sessionend', () => {
-        xrHud.m.visible = false; xrGunHolder = null; camera.add(gunGroup); gunGroup.rotation.set(0, 0, 0); gunGroup.scale.setScalar(1); playerRig.rotation.set(0, 0, 0); updateRendererSize();
+        vrUI.hide();
+        xrHud.m.visible = false; xrGunHolder = null;
+        camera.add(gunGroup); gunGroup.rotation.set(0, 0, 0); gunGroup.scale.setScalar(1);
+        playerRig.rotation.set(0, 0, 0); updateRendererSize();
       });
+
       const _xrV = new THREE.Vector3(), _xrQ = new THREE.Quaternion();
       function xrAimSet() {
         gunGroup.updateMatrixWorld(true);
@@ -3667,40 +4308,77 @@
         raycaster.set(o, d);
         return { start: o, end: o.clone().addScaledVector(d, 42) };
       }
+
       function xrUpdate(dt) {
         const session = renderer.xr.getSession(); if (!session) return;
-        camera.getWorldDirection(_xrV); const headYaw = Math.atan2(-_xrV.x, -_xrV.z); state.yaw = headYaw; state.pitch = Math.asin(Math.max(-1, Math.min(1, _xrV.y)));
+        camera.getWorldDirection(_xrV);
+        const headYaw = Math.atan2(-_xrV.x, -_xrV.z);
+        state.yaw = headYaw;
+        state.pitch = Math.asin(Math.max(-1, Math.min(1, _xrV.y)));
         playerRig.rotation.y = xrTurn;
         if (xrSnap > 0) xrSnap -= dt;
+
+        pollVRUIInteraction();
+
         for (const src of session.inputSources) {
-          const gp = src.gamepad; if (!gp) continue; const ax = gp.axes, hand = src.handedness, prev = xrBtnPrev[hand] || (xrBtnPrev[hand] = []);
+          const gp = src.gamepad; if (!gp) continue;
+          const ax = gp.axes, hand = src.handedness, prev = xrBtnPrev[hand] || (xrBtnPrev[hand] = []);
           const stickX = ax.length >= 4 ? ax[2] : (ax[0] || 0), stickY = ax.length >= 4 ? ax[3] : (ax[1] || 0);
-          if (hand === 'left') {
-            const mx = Math.abs(stickX) > 0.15 ? stickX : 0, my = Math.abs(stickY) > 0.15 ? stickY : 0;
-            const sp = 3.2 * state.joySens; playerPos.x += (-Math.sin(headYaw) * -my + Math.cos(headYaw) * mx) * sp * dt; playerPos.z += (-Math.cos(headYaw) * -my - Math.sin(headYaw) * mx) * sp * dt;
-            resolveCircleColliders(playerPos, 0.55);
-          } else if (hand === 'right') {
-            if (Math.abs(stickX) > 0.7 && xrSnap <= 0) { xrTurn -= Math.sign(stickX) * Math.PI / 6; xrSnap = 0.28; }
+
+          if (vrMesh && vrMesh.visible) {
+            // In VR Menu: stick translation is locked to prevent disorienting drifting
+            if (hand === 'right' && Math.abs(stickX) > 0.7 && xrSnap <= 0) {
+              xrTurn -= Math.sign(stickX) * Math.PI / 6;
+              xrSnap = 0.28;
+            }
+          } else {
+            // In Gameplay: smooth locomotion
+            if (hand === 'left') {
+              const mx = Math.abs(stickX) > 0.15 ? stickX : 0, my = Math.abs(stickY) > 0.15 ? stickY : 0;
+              const sp = 3.2 * state.joySens;
+              playerPos.x += (-Math.sin(headYaw) * -my + Math.cos(headYaw) * mx) * sp * dt;
+              playerPos.z += (-Math.cos(headYaw) * -my - Math.sin(headYaw) * mx) * sp * dt;
+              resolveCircleColliders(playerPos, 0.55);
+            } else if (hand === 'right') {
+              if (Math.abs(stickX) > 0.7 && xrSnap <= 0) {
+                xrTurn -= Math.sign(stickX) * Math.PI / 6;
+                xrSnap = 0.28;
+              }
+            }
           }
+
           const b = gp.buttons;
-          if (hand === 'right') {
-            if (b[0] && b[0].pressed && PISTOLS[state.weaponIdx].id !== 'AUTO-9') { if (!prev[0]) firePistol(); } else if (b[0] && b[0].pressed) firePistol();
-            if (b[4] && b[4].pressed && !prev[4]) triggerReload();
-            if (b[5] && b[5].pressed && !prev[5]) cycleTorch();
-          } else if (hand === 'left') {
-            if (b[4] && b[4].pressed && !prev[4]) equipPistol(state.weaponIdx + 1);
-            if (b[5] && b[5].pressed && !prev[5]) cycleTorch();
+          if (vrMesh && vrMesh.visible) {
+            if (b[0] && b[0].pressed && !prev[0] && activeVRHoverBtn) {
+              const matchingCtrl = xrCtl.find(c => c.userData.hand === hand);
+              executeVRButtonClick(activeVRHoverBtn, matchingCtrl);
+            }
+          } else {
+            if (hand === 'right') {
+              if (b[0] && b[0].pressed && PISTOLS[state.weaponIdx].id !== 'AUTO-9') {
+                if (!prev[0]) firePistol();
+              } else if (b[0] && b[0].pressed) {
+                firePistol();
+              }
+              if (b[4] && b[4].pressed && !prev[4]) triggerReload();
+              if (b[5] && b[5].pressed && !prev[5]) cycleTorch();
+            } else if (hand === 'left') {
+              if (b[4] && b[4].pressed && !prev[4]) equipPistol(state.weaponIdx + 1);
+              if (b[5] && b[5].pressed && !prev[5]) openMenu('OPERATIONS PAUSED', 'RESUME', true);
+            }
           }
+
           for (let i = 0; i < b.length; i++) prev[i] = b[i].pressed;
-          if (hand === 'right' && state.ammo < xrLastAmmo && gp.hapticActuators && gp.hapticActuators[0]) { try { gp.hapticActuators[0].pulse(0.7, 70); } catch (_) {} }
+          if (hand === 'right' && state.ammo < xrLastAmmo && gp.hapticActuators && gp.hapticActuators[0]) {
+            try { gp.hapticActuators[0].pulse(0.7, 70); } catch (_) {}
+          }
         }
+
         xrLastAmmo = state.ammo;
         if (xrGunHolder) { gunGroup.position.set(0, 0, state.recoil * 0.06); }
         xrHudT += dt; if (xrHudT > 0.25) { xrHudT = 0; drawXrHud(); }
-        if (!state.running) { xrRetry += dt; if (xrRetry > 3) { xrRetry = 0; startGame(); } } else xrRetry = 0;
       }
       if (navigator.xr && navigator.xr.isSessionSupported) navigator.xr.isSessionSupported('immersive-vr').then((ok) => { if (ok) btnVrMode.textContent = 'ENTER VR (QUEST)'; }).catch(() => {});
-      btnVrMode.addEventListener('click', goFullscreen);
 
 
       // =========================================================================
@@ -3771,12 +4449,12 @@
       let bloodT = 0;
       function screenBlood() { bloodScreen.style.transition = 'none'; bloodScreen.style.transform = Math.random() < 0.5 ? 'scaleX(-1)' : 'none'; bloodScreen.style.opacity = '1'; clearTimeout(bloodT); bloodT = setTimeout(() => { bloodScreen.style.transition = 'opacity 0.8s ease-out'; bloodScreen.style.opacity = '0'; }, 260); }
       const _dv = new THREE.Vector3();
-      function fxHit(en, pt, dmg) {
+      function fxHit(en, pt, dmg, isHead) {
         camera.getWorldDirection(_dv); const p = en.root.position;
-        bloodBurst(pt, 8 + Math.min(14, Math.round(dmg / 7)), 5, _dv);
-        sfxLib.play('flesh', { x: pt.x, y: pt.y, z: pt.z, vol: 0.8 });
+        bloodBurst(pt, isHead ? 16 : (8 + Math.min(14, Math.round(dmg / 7))), isHead ? 7 : 5, _dv);
+        sfxLib.play('flesh', { x: pt.x, y: pt.y, z: pt.z, vol: isHead ? 1.0 : 0.8, rate: isHead ? 1.25 : 1.0 });
         if (Math.random() < 0.55) sfxLib.play(en.type === 'BRUTE' ? 'bIdle' : 'zHurt', { x: p.x, y: 1.5, z: p.z, vol: 0.8 });
-        if (Math.random() < 0.35) sfxLib.play('blood', { x: pt.x, y: pt.y, z: pt.z, vol: 0.6 });
+        if (Math.random() < (isHead ? 0.75 : 0.35)) sfxLib.play('blood', { x: pt.x, y: pt.y, z: pt.z, vol: isHead ? 0.85 : 0.6 });
       }
       function fxKill(en, pt) {
         const p = en.root.position; en.dying = 1.6; camera.getWorldDirection(_dv);
@@ -3813,7 +4491,10 @@
         const walk = mixer.clipAction(clip); walk.play(); const base = en.type === 'WATCHER' ? 1.4 : (en.type === 'BRUTE' ? 0.8 : 1.0); walk.timeScale = base;
         let atk = null; const ac = isCrab ? anims.find((a) => a.name.indexOf('attack') >= 0) : null;
         if (ac) { atk = mixer.clipAction(ac); atk.setLoop(THREE.LoopOnce, 1); atk.clampWhenFinished = false; mixer.addEventListener('finished', (e) => { if (e.action === atk) { atk.stop(); walk.setEffectiveWeight(1); } }); }
-        en.root.children.forEach((c) => { c.visible = false; }); en.root.add(holder);
+        if (en.visGroup) en.visGroup.visible = false;
+        else en.root.children.forEach((c) => { if (c !== en.hitboxGroup) c.visible = false; });
+        en.root.add(holder);
+        tagEnemyHitMeshes(holder, en);
         en.glb = { holder, mixer, walk, atk, gx: en.root.position.x, gz: en.root.position.z };
       }
       let glbT = 0, cullT = 0;
@@ -3831,8 +4512,8 @@
             en.dying -= dt; const k = Math.min(1, (1 - en.dying / 1.6) * 2.2);
             if (en.type === 'BAT') { p.y = Math.max(0.15, p.y - dt * 5); en.root.rotation.z = k * 2; }
             else if (en.type === 'HOUND') en.root.rotation.z = k * 1.5;
-            else { const body = en.glb ? en.glb.holder : en.root.children[0]; if (body) { body.rotation.x = -k * 1.5; body.position.y = -k * 0.25; } }
-            if (en.dying <= 0) { en.root.visible = false; const body = en.glb ? en.glb.holder : en.root.children[0]; if (body && en.type !== 'BAT' && en.type !== 'HOUND') { body.rotation.x = 0; body.position.y = 0; } }
+            else { const body = en.glb ? en.glb.holder : (en.visGroup ? en.visGroup : en.root.children[0]); if (body) { body.rotation.x = -k * 1.5; body.position.y = -k * 0.25; } }
+            if (en.dying <= 0) { en.root.visible = false; const body = en.glb ? en.glb.holder : (en.visGroup ? en.visGroup : en.root.children[0]); if (body && en.type !== 'BAT' && en.type !== 'HOUND') { body.rotation.x = 0; body.position.y = 0; } }
           }
         }
       }

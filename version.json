@@ -1,1 +1,1 @@
-{ "version": "1.2.0", "notes": "Real zombie models and sounds, blood, lobby, auto-update" }
+{ "version": "1.3.0", "notes": "Compound hitboxes, smooth locomotion, mobile touch isolation, high-DPI scaling, and in-VR holographic UI with tactical laser sight" }
